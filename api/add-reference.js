@@ -8,7 +8,7 @@ const supabase = createClient(
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -21,6 +21,18 @@ export default async function handler(req, res) {
   try {
     const { title, url, subject, description, userId } = req.body;
     
+    // Verify the user exists in profiles table
+    const { data: userProfile, error: userError } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('id', userId)
+      .single();
+    
+    if (userError || !userProfile) {
+      return res.status(403).json({ error: 'User not found. Please login again.' });
+    }
+    
+    // Insert the reference using service role to bypass RLS temporarily
     const { data, error } = await supabase
       .from('references')
       .insert({
@@ -33,13 +45,20 @@ export default async function handler(req, res) {
         downvotes: 0,
         verified: false
       })
-      .select()
+      .select(`
+        *,
+        profiles:added_by (username)
+      `)
       .single();
     
-    if (error) throw error;
+    if (error) {
+      console.error('Insert error:', error);
+      throw error;
+    }
     
     res.status(200).json({ data });
   } catch (error) {
+    console.error('Add reference error:', error);
     res.status(500).json({ error: error.message });
   }
 }
