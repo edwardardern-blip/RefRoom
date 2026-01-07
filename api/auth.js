@@ -22,42 +22,111 @@ export default async function handler(req, res) {
     const { action, email, password, username } = req.body;
     
     if (action === 'signup') {
-      const { data, error } = await supabase.auth.signUp({
+      // Sign up the user
+      const { data: authData, error: authError } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          data: {
+            username: username || email.split('@')[0]
+          }
+        }
       });
       
-      if (error) throw error;
-      
-      if (data.user) {
-        await supabase.from('profiles').insert({
-          id: data.user.id,
-          username: username || email.split('@')[0],
-          email,
-          reputation: 0
-        });
+      if (authError) {
+        console.error('Auth signup error:', authError);
+        throw authError;
       }
       
-      res.status(200).json({ user: data.user });
+      if (authData.user) {
+        console.log('User created:', authData.user.id);
+        
+        // Create profile - use upsert to avoid conflicts
+        const { data: profileData, error: profileError } = await supabase
+          .from('profiles')
+          .upsert({
+            id: authData.user.id,
+            username: username || email.split('@')[0],
+            email: email,
+            reputation: 0
+          }, {
+            onConflict: 'id'
+          })
+          .select()
+          .single();
+        
+        if (profileError) {
+          console.error('Profile creation error:', profileError);
+          // Continue anyway - profile might already exist
+        }
+        
+        const profile = profileData || {
+          id: authData.user.id,
+          username: username || email.split('@')[0],
+          email: email,
+          reputation: 0
+        };
+        
+        res.status(200).json({ 
+          user: authData.user,
+          profile: profile
+        });
+      } else {
+        throw new Error('User creation failed');
+      }
+      
     } else if (action === 'login') {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      // Login
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
       
-      if (error) throw error;
+      if (authError) {
+        console.error('Auth login error:', authError);
+        throw authError;
+      }
       
-      const { data: profile } = await supabase
+      // Get or create profile
+      let { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', data.user.id)
-        .single();
+        .eq('id', authData.user.id)
+        .maybeSingle();
       
-      res.status(200).json({ user: data.user, profile });
+      if (!profile) {
+        console.log('Profile not found, creating...');
+        const { data: newProfile } = await supabase
+          .from('profiles')
+          .upsert({
+            id: authData.user.id,
+            username: email.split('@')[0],
+            email: email,
+            reputation: 0
+          }, {
+            onConflict: 'id'
+          })
+          .select()
+          .single();
+        
+        profile = newProfile || {
+          id: authData.user.id,
+          username: email.split('@')[0],
+          email: email,
+          reputation: 0
+        };
+      }
+      
+      res.status(200).json({ 
+        user: authData.user, 
+        profile: profile 
+      });
+      
     } else {
       res.status(400).json({ error: 'Invalid action' });
     }
   } catch (error) {
+    console.error('Auth handler error:', error);
     res.status(500).json({ error: error.message });
   }
 }
